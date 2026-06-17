@@ -6,44 +6,64 @@ import pandas as pd
 st.set_page_config(page_title="Master Hybrid Quant Dashboard", layout="wide")
 st.title("🚀 Master Hybrid Quant Platform")
 
-# 2. FAILSAFE DATA PIPELINE: Scrape S&P 500 or fallback to massive watch list if lxml fails
+# 2. FAILSAFE DATA INDEX PIPELINE
 @st.cache_data(ttl=86400)
 def get_sp500_tickers():
     fallback_pool = ["AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "BRK-B", "LLY", "AVGO", "JPM", 
                      "TSLA", "UNH", "V", "XOM", "MA", "HD", "PG", "COST", "AMD", "CRM", "INTC", "MU", "NFLX", "QCOM", "TXN"]
     try:
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        # We specify html5lib or standard string parsing to avoid lxml dependencies
         tables = pd.read_html(url, flavor='html5lib')
         df = tables[0]
         tickers = df['Symbol'].str.replace('.', '-', regex=False).tolist()
         return tickers
     except Exception:
-        # If the server lacks lxml/html5lib, seamlessly drop back to the large pool instead of crashing
         return fallback_pool
 
 all_tickers = get_sp500_tickers()
 
-# 3. SIDEBAR NAVIGATION & DUAL-MODE SELECTION
+# 3. SIDEBAR NAVIGATION
 st.sidebar.header("Navigation Controls")
-app_mode = st.sidebar.radio("Choose App Functionality:", ["Single Ticker Lookup", "Automated Market Screener"])
+app_mode = st.sidebar.radio("Choose App Functionality:", ["Single Asset Lookup", "Automated Market Screener"])
 
-# --- MODE 1: SINGLE TICKER LOOKUP ---
-if app_mode == "Single Ticker Lookup":
-    st.subheader("🔍 Specific Asset Deep-Dive")
-    st.markdown("Type any stock ticker below to analyze its live position relative to our dual-filter logic.")
+# --- MODE 1: SINGLE ASSET LOOKUP (Now with Smart Name Resolution) ---
+if app_mode == "Single Asset Lookup":
+    st.subheader("🔍 Intelligent Asset Lookup")
+    st.markdown("Type a **Ticker Symbol** or a **Company Name** (e.g., *CRM*, *Salesforce*, *Tesla*, *AMD*).")
     
-    ticker_input = st.text_input("Enter Ticker Symbol (e.g., CRM, AMD, SPY):", "CRM").strip().upper()
+    # A cleaner user input text box
+    user_search = st.text_input("Search Company or Ticker:", "Salesforce").strip()
     
-    if st.button("Analyze Stock"):
-        with st.spinner(f"Fetching live data for {ticker_input}..."):
+    if st.button("Analyze Asset"):
+        with st.spinner(f"Searching for '{user_search}'..."):
+            ticker_to_analyze = None
+            resolved_name = None
+            
+            # Smart Resolver Logic: Check if it's already a clean ticker, if not, search Yahoo Finance
             try:
-                stock = yf.Ticker(ticker_input)
+                search_results = yf.Search(user_search, max_results=3).quotes
+                if search_results:
+                    # Snag the top matching stock result
+                    ticker_to_analyze = search_results[0]['symbol']
+                    resolved_name = search_results[0].get('longname', ticker_to_analyze)
+                else:
+                    # Fallback straight to treating the input as a ticker if search is blank
+                    ticker_to_analyze = user_search.upper()
+                    resolved_name = ticker_to_analyze
+            except Exception:
+                ticker_to_analyze = user_search.upper()
+                resolved_name = ticker_to_analyze
+
+            # Run strategy math on the resolved ticker symbol
+            try:
+                stock = yf.Ticker(ticker_to_analyze)
                 history = stock.history(period="60d")
                 
                 if len(history) < 51:
-                    st.error(f"Insufficient trading history found for ticker: {ticker_input}")
+                    st.error(f"Could not load sufficient history for **{resolved_name}** ({ticker_to_analyze}).")
                 else:
+                    st.success(f"Successfully matched query to: **{resolved_name}** (`{ticker_to_analyze}`)")
+                    
                     past_data = history.iloc[:-1]
                     today = history.iloc[-1]
                     current_price = today['Close']
@@ -76,7 +96,7 @@ if app_mode == "Single Ticker Lookup":
                     else:
                         st.info("🟡 **HOLD / NEUTRAL:** Asset is tracking normally within its standard structural bands.")
             except Exception as e:
-                st.error(f"Error loading ticker {ticker_input}: {e}")
+                st.error(f"Error analyzing resolved ticker `{ticker_to_analyze}`: {e}")
 
 # --- MODE 2: AUTOMATED MARKET SCREENER ---
 elif app_mode == "Automated Market Screener":
