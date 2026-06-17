@@ -1,2 +1,4 @@
 yfinance
 pandas
+html5lib
+bs4
