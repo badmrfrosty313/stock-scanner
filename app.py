@@ -2,41 +2,72 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 
-# 1. WEB APP SETUP: Set the title and layout of the webpage
-st.set_page_config(page_title="Master Hybrid Quant Dashboard", layout="wide")
+# 1. PAGE SETUP
+st.set_page_config(page_title="Master S&P 500 Hybrid Scanner", layout="wide")
+st.title("🕵️‍♂️ Automated S&P 500 Hybrid Screener")
+st.markdown("This system scrapes all components of the S&P 500, processes their trend data, and isolates active tactical entry and exit signals.")
 
-st.title("🚀 Master Hybrid Quant Scanner")
-st.markdown("This dashboard combines **50-Day Trend Following** with **5-Day Breakout Momentum** to scan for high-probability entries and exits.")
+# 2. AUTOMATED DATA PIPELINE: Scrape S&P 500 tickers directly from Wikipedia
+@st.cache_data(ttl=86400) # Cache the list for 24 hours so it stays fast
+def get_sp500_tickers():
+    try:
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        tables = pd.read_html(url)
+        df = tables[0]
+        # Clean tickers (replace dots with hyphens for yfinance compatibility, like BRK.B -> BRK-B)
+        tickers = df['Symbol'].str.replace('.', '-', regex=False).tolist()
+        return tickers
+    except Exception as e:
+        st.error(f"Error scraping S&P 500 list: {e}")
+        return ["AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "SPY", "VOO"]
 
-# 2. SIDEBAR NAVIGATION: Allow users to customize their watchlist on the fly
-st.sidebar.header("Scan Configuration")
-default_tickers = "AAPL, SPY, VOO"
-user_input = st.sidebar.text_input("Enter Ticker Symbols (comma separated):", default_tickers)
+# Pull the complete list
+all_tickers = get_sp500_tickers()
 
-# Clean up the user input into a proper Python list
-watch_list = [ticker.strip().upper() for ticker in user_input.split(",") if ticker.strip()]
+# 3. SIDEBAR CONFIGURATION
+st.sidebar.header("Screener Controls")
+st.sidebar.write(f"Total assets loaded in index pool: **{len(all_tickers)}**")
 
-# 3. CORE PROCESSING ENGINE
-if st.sidebar.button("Run Market Scan"):
-    st.subheader("📊 Live Market Analysis")
+# Let the user choose to scan a smaller subset first or go full scale
+scan_mode = st.sidebar.selectbox("Select Scan Range:", ["Top 25 Tech & Large Caps", "Full S&P 500 Index (Takes ~2 mins)"])
+
+if scan_mode == "Top 25 Tech & Large Caps":
+    # A pre-curated high-volume list for lightning-fast testing
+    scan_pool = ["AAPL", "MSFT", "AMZN", "NVDA", "GOOGL", "META", "BRK-B", "LLY", "AVGO", "JPM", 
+                 "TSLA", "UNH", "V", "XOM", "MA", "HD", "PG", "COST", "AMD", "CRM", "INTC", "MU", "NFLX", "QCOM", "TXN"]
+else:
+    scan_pool = all_tickers
+
+# 4. EXECUTION MATRIX
+if st.sidebar.button("Launch Market-Wide Scan"):
+    st.subheader(f"🔍 Active Signals Found Across Pool")
     
-    # Create empty columns for a clean grid layout
-    for ticker_symbol in watch_list:
-        with st.spinner(f"Analyzing {ticker_symbol}..."):
+    # Setup empty data lists to build a clean final report table
+    results = []
+    
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for index, ticker_symbol in enumerate(scan_pool):
+        # Update visual loading indicators
+        progress = (index + 1) / len(scan_pool)
+        progress_bar.progress(progress)
+        status_text.text(f"Processing {index+1}/{len(scan_pool)}: {ticker_symbol}")
+        
+        try:
             stock = yf.Ticker(ticker_symbol)
+            # Pull 60 days of data
             history = stock.history(period="60d")
             
             if len(history) < 51:
-                st.error(f"Could not fetch enough data for {ticker_symbol}.")
                 continue
                 
-            # Extract data points
             past_data = history.iloc[:-1]
             today = history.iloc[-1]
             current_price = today['Close']
             today_volume = today['Volume']
             
-            # Mathematical Calculations
+            # Hybrid Indicator Formulas
             moving_avg_50 = history['Close'].rolling(window=50).mean().iloc[-1]
             percent_from_avg = ((current_price - moving_avg_50) / moving_avg_50) * 100
             
@@ -45,32 +76,56 @@ if st.sidebar.button("Run Market Scan"):
             avg_volume_50d = past_data.tail(50)['Volume'].mean()
             volume_surge = today_volume / avg_volume_50d
             
-            # Create a dedicated visual section for each stock
-            st.markdown(f"### {ticker_symbol}")
-            col1, col2, col3, col4 = st.columns(4)
+            # Signal Classification
+            signal = "HOLD / NEUTRAL"
+            reason = "Tracking within standard bands."
             
-            # Display clean visual data cards (Metrics)
-            col1.metric("Current Price", f"${current_price:.2f}")
-            col2.metric("50-Day Moving Avg", f"${moving_avg_50:.2f}")
-            col3.metric("Distance from Trend", f"{percent_from_avg:.1f}%")
-            col4.metric("Volume Momentum", f"{volume_surge:.1f}x")
-            
-            # 4. HYBRID RECOMMENDATION ENGINE WITH VISUAL ALERTS
             if percent_from_avg <= -15.0:
-                st.error("🚨 **SYSTEMIC RISK / PAUSE:** Severe macro crash detected. Pausing automated entries.")
-                
+                signal = "⚠️ RISK CRASH WARNING"
+                reason = "Severe drop below historical average trend line."
             elif percent_from_avg <= -2.0 and current_price > resistance_5d:
-                st.success("🔥 **STRONG BUY:** Asset is in a value pullback and has crossed its 5-day ceiling to confirm a turnaround!")
-                
+                signal = "🟢 STRONG BUY"
+                reason = "Value pullback territory with confirmed 5-day price breakout breakout turnaround."
             elif percent_from_avg >= 5.0 and volume_surge < 1.0:
-                st.warning("💰 **STRONG SELL:** Price is heavily extended and volume is drying up. The move is exhausted.")
-                
+                signal = "🔴 STRONG SELL"
+                reason = "Overextended price rally matching dying trading volume."
             elif percent_from_avg >= 5.0 and volume_surge >= 1.5:
-                st.info("🚀 **RIDE THE WAVE:** Price is high, but massive institutional volume is pushing it further. Let profits run.")
+                signal = "🚀 MOMENTUM RIDE"
+                reason = "Overextended trend line backed by deep institutional volume."
                 
-            else:
-                st.info("🟡 **HOLD / NEUTRAL:** Asset is tracking normally within standard trading bands.")
+            # Only record assets that are doing something highly actionable
+            if signal != "HOLD / NEUTRAL":
+                results.append({
+                    "Ticker": ticker_symbol,
+                    "Current Price": f"${current_price:.2f}",
+                    "Position vs 50-MA": f"{percent_from_avg:.1f}%",
+                    "Volume Surge": f"{volume_surge:.1f}x",
+                    "System Signal": signal,
+                    "Technical Context": reason
+                })
                 
-            st.markdown("---")
+        except Exception:
+            continue # If yfinance hits a network glitch on a specific stock, skip it silently
+            
+    # Clean up loaders when done
+    progress_bar.empty()
+    status_text.empty()
+    
+    # 5. RENDER LOGGED RESULTS
+    if len(results) > 0:
+        df_results = pd.DataFrame(results)
+        
+        # Style the dashboard layout dynamically
+        st.dataframe(df_results, use_container_width=True, hide_index=True)
+        
+        # Quick Summary Cards
+        buys_found = len(df_results[df_results['System Signal'] == "🟢 STRONG BUY"])
+        sells_found = len(df_results[df_results['System Signal'] == "🔴 STRONG SELL"])
+        
+        col1, col2 = st.columns(2)
+        col1.metric("Total Pullback Turnaround Buys isolated", buys_found)
+        col2.metric("Total Exhaustion Sells isolated", sells_found)
+    else:
+        st.success("Scan complete! No severe anomalies found. Every asset is currently trading safely within standard neutral ranges.")
 else:
-    st.info("👈 Click **'Run Market Scan'** in the sidebar to fetch live data and calculate signals.")
+    st.info("👈 Use the sidebar configuration menu to pick your target search range and click **'Launch Market-Wide Scan'**.")
